@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="payment_pix_form" model="ir.ui.view">
+        <field name="name">payment.pix.form</field>
+        <field name="model">payment.pix</field>
+        <field name="arch" type="xml">
+            <form string="PIX">
+                <sheet>
+                    <group>
+                        <field name="name"/>
+                        <field name="amount"/>
+                        <field name="date"/>
+                        <field name="status"/>
+                        <field name="type"/>
+                        <field name="pix_id"/>
+                        <field name="json_send"/>
+                        <field name="json_response"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="payment_pix_list" model="ir.ui.view">
+        <field name="name">payment.pix.list</field>
+        <field name="model">payment.pix</field>
+        <field name="arch" type="xml">
+            <list string="PIX">
+                <field name="name"/>
+                <field name="amount"/>
+                <field name="date"/>
+                <field name="status"/>
+            </list>
+        </field>
+    </record>
+	
+
+    <record id="action_payment_pix" model="ir.actions.act_window">
+        <field name="name">Pagamentos PIX</field>
+        <field name="res_model">payment.pix</field>
+        <field name="view_mode">list,form</field>
+        <field name="help" type="html">
+            <p>
+                Visualize e gerencie transações PIX cadastradas.
+            </p>
+        </field>
+    </record>
+    
+    <menuitem id="menu_payment_pix_root"
+              name="PIX"
+              sequence="10"
+              parent="account.menu_finance_configuration"
+              groups="account.group_account_manager"/>
+
+    <menuitem id="menu_payment_pix"
+              name="Pagamentos PIX"
+              parent="menu_payment_pix_root"
+              action="action_payment_pix"
+              sequence="10"
+              groups="account.group_account_manager"/>
+</odoo>

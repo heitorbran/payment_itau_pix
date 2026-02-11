@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data>
+        <record id="view_partner_bank_form_inherit_pix" model="ir.ui.view">
+            <field name="name">res.partner.bank.form.inherit.pix</field>
+            <field name="model">res.partner.bank</field>
+            <field name="inherit_id" ref="base.view_partner_bank_form"/>
+            <field name="arch" type="xml">
+                <xpath expr="//sheet/group[last()]" position="after">
+                    <group string="Pagamento PIX">
+                        <group>
+                            <field name="bank_account_type"/>
+                            <field name="pix_payment_type"/>
+                            <field name="pix_key_type" invisible="pix_payment_type != 'chave_pix'"/>
+                            <field name="pix_key" invisible="pix_payment_type != 'chave_pix'"/>
+                        </group>
+                    </group>
+                </xpath>
+            </field>
+        </record>
+    </data>
+</odoo>
+
