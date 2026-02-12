@@ -80,7 +80,6 @@ class BasePaymentApi(models.Model):
             response_data = response.json()
             _logger.info(f'Response: {response_data}')
             
-            
             if 'access_token' not in response_data:
                 error_msg = 'access_token não encontrado na resposta'
                 self.create_token_log({}, 'failed', error_msg, payload, response_data, duration_ms)
@@ -96,14 +95,11 @@ class BasePaymentApi(models.Model):
                 'token_type': response_data.get('token_type', 'Bearer')
             }
             
-            # Armazena o token no registro
             self.write({
                 'itau_pix_current_token': token_data['access_token'],
                 'itau_pix_token_expires_at': token_data['expires_at'],
             })
-            # _logger.info(f'Token: {token_data}')
-            
-            # Cria log do token
+
             self.create_token_log(
                 token_data,
                 'success',
@@ -124,3 +120,15 @@ class BasePaymentApi(models.Model):
             raise ValidationError(_('Erro ao gerar o token de autorização Itau PIX: %s') % str(e))
         except Exception as e:
             raise ValidationError(_('Erro ao gerar o token de autorização Itau PIX: %s') % str(e))
+    
+    
+    #TODO - Verificar depois como é a api para Produção
+    def get_api_url(self):
+        """Retorna a URL da API baseada na integração"""
+        self.ensure_one()
+        
+        if self.integracao == 'itau_pix':
+            base_url = self.base_url.rstrip('/')
+            return base_url
+        else:
+            return self.base_url.rstrip('/') if self.base_url else ''

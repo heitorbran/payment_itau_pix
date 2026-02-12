@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data>
+        <record id="view_res_company_form_pix" model="ir.ui.view">
+            <field name="name">res.company.form.pix</field>
+            <field name="model">res.company</field>
+            <field name="inherit_id" ref="base.view_company_form"/>
+            <field name="arch" type="xml">
+                <xpath expr="//notebook" position="inside">
+                    <page string="PIX Itaú" name="itau_pix">
+                        <group>
+                            <group string="Configuração API Itaú PIX">
+                                <field name="itau_pix_api_id"
+                                       options="{'no_create': True, 'no_create_edit': True}"
+                                       help="Selecione a configuração da API para esta empresa."/>
+                            </group>
+                        </group>
+                    </page>
+                </xpath>
+            </field>
+        </record>
+    </data>
+</odoo>
+

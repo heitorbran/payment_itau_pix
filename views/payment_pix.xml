@@ -13,9 +13,15 @@
                         <field name="status"/>
                         <field name="type"/>
                         <field name="pix_id"/>
-                        <field name="json_send"/>
-                        <field name="json_response"/>
                     </group>
+                    <notebook>
+                        <page string="JSON Enviado">
+                            <field name="json_send"/>
+                        </page>
+                        <page string="JSON Recebido">
+                            <field name="json_response"/>
+                        </page>
+                    </notebook>
                 </sheet>
             </form>
         </field>

@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data>
+        <record id="view_account_payment_register_form_inherit" model="ir.ui.view">
+            <field name="name">account.payment.register.form.inherit</field>
+            <field name="model">account.payment.register</field>
+            <field name="inherit_id" ref="account.view_account_payment_register_form"/>
+            <field name="arch" type="xml">
+                <!-- Oculta o campo installments_switch_html com widget account_payment_register_html -->
+                <xpath expr="//field[@name='installments_switch_html' and @widget='account_payment_register_html']" position="attributes">
+                    <attribute name="invisible">1</attribute>
+                </xpath>
+                
+                <xpath expr="//field[@name='line_ids']" position="after">
+                    <group string="Parcelas">
+                      <field name="parcels_ids" nolabel="1" widget="many2many"
+                              domain="[('id', 'in', line_ids)]"
+                              context="{'show_address': 1}"
+                              required="1"/>
+                    </group>
+                </xpath>
+                
+                <!-- Adiciona atributos ao campo amount -->
+                <xpath expr="//field[@name='amount']" position="attributes">
+                    <attribute name="force_save">1</attribute>
+                    <attribute name="readonly">not can_edit_wizard or can_group_payments and not group_payment</attribute>
+                </xpath>
+                
+                <!-- Adiciona botão no footer -->
+                <xpath expr="//footer" position="inside">
+                    <button name="action_generate_parcels_payments" 
+                            string="Gerar Parcelas para Pagamento" 
+                            type="object" 
+                            class="btn-primary"
+                            invisible="not parcels_ids"/>
+                </xpath>
+
+            </field>
+        </record>
+    </data>
+</odoo>

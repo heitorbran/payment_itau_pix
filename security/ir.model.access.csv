@@ -1,6 +1,6 @@
 id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
-access_pix_payment_wizard_user,pix.payment.wizard.user,model_pix_payment_wizard,account.group_account_invoice,1,1,1,1
 access_itau_api_pix_user,itau.api.pix.user,model_itau_api_pix,account.group_account_invoice,1,0,0,0
 access_payment_pix_user,payment.pix.user,model_payment_pix,account.group_account_manager,1,1,1,1
 access_payment_pix_readonly,payment.pix.readonly,model_payment_pix,account.group_account_readonly,1,0,0,0
-
+access_account_payment_pix_fields,account.payment.pix.fields,model_account_payment,account.group_account_invoice,1,1,1,1
+access_res_company_itau_pix_api_id,res.company.itau.pix.api.id,model_res_company,base.group_system,1,1,1,1
