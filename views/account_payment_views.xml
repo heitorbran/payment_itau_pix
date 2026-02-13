@@ -19,6 +19,13 @@
                             readonly="payment_pix_id != False"
                             help="Envia o pagamento via PIX Itaú"
                             invisible="state != 'in_process' or payment_pix_id != False"/>
+                    <button name="action_update_payment_pix_status"
+                            string="Atualizar status PIX Itaú"
+                            type="object"
+                            class="btn-secondary"
+                            readonly="payment_pix_id != False"
+                            help="Atualiza o status do pagamento PIX Itaú"
+                            invisible="state != 'in_process'"/>
                 </xpath>
                 <xpath expr="//notebook" position="inside">
                     <page string="PIX Itaú" invisible="not payment_pix_id">

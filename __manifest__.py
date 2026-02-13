@@ -29,6 +29,7 @@ Funcionalidades:
     ],
     'data': [
         'security/ir.model.access.csv',
+        'data/ir_cron_data.xml',
         'views/res_bank_views.xml',
         'views/res_partner_bank_views.xml',
         'views/account_journal_views.xml',

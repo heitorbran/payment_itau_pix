@@ -4,6 +4,7 @@ from odoo.exceptions import ValidationError
 from datetime import datetime, timedelta
 import requests
 import logging
+import json
 
 _logger = logging.getLogger(__name__)
 
@@ -36,19 +37,18 @@ class BasePaymentApi(models.Model):
         help='Renova o token automaticamente X segundos antes de expirar'
     )
     
-    def _get_itau_pix_token(self):
+    def _get_itau_pix_token(self, base_payment_api):
         """
         Retorna um token Itau PIX válido, renovando-o se necessário.
         """
-        self.ensure_one()
         
         # Verifica se já existe um token válido
-        if self.itau_pix_current_token and self.itau_pix_token_expires_at:
+        if base_payment_api.itau_pix_current_token and base_payment_api.itau_pix_token_expires_at:
             now = fields.Datetime.now()
-            safety_margin = timedelta(seconds=self.itau_pix_token_safety_margin or 60)
-            if now < (self.itau_pix_token_expires_at - safety_margin):
+            safety_margin = timedelta(seconds=base_payment_api.itau_pix_token_safety_margin or 60)
+            if now < (base_payment_api.itau_pix_token_expires_at - safety_margin):
                 _logger.info("Utilizando token Itau PIX existente e válido.")
-                return self.itau_pix_current_token
+                return base_payment_api.itau_pix_current_token
         
         _logger.info("Token Itau PIX inexistente ou expirado. Iniciando processo de renovação.")
         
@@ -60,11 +60,11 @@ class BasePaymentApi(models.Model):
             }
             payload = {
                 'grant_type': 'client_credentials',
-                'client_id': self.client_id,
-                'client_secret': self.client_secret,
+                'client_id': base_payment_api.client_id,
+                'client_secret': base_payment_api.client_secret,
             }
             
-            api_url = self.base_url.rstrip('/')
+            api_url = base_payment_api.base_url.rstrip('/')
             token_url = f'{api_url}/api/oauth/jwt'
             
             start_time = datetime.now()
@@ -72,7 +72,7 @@ class BasePaymentApi(models.Model):
                 url=token_url,
                 headers=headers,
                 data=payload,
-                timeout=self.timeout or 30
+                timeout=base_payment_api.timeout or 30
             )
             duration_ms = int((datetime.now() - start_time).total_seconds() * 1000)
             
@@ -82,7 +82,7 @@ class BasePaymentApi(models.Model):
             
             if 'access_token' not in response_data:
                 error_msg = 'access_token não encontrado na resposta'
-                self.create_token_log({}, 'failed', error_msg, payload, response_data, duration_ms)
+                base_payment_api.create_token_log({}, 'failed', error_msg, payload, response_data, duration_ms)
                 raise ValidationError(_('Resposta inválida da API Itau PIX: %s') % error_msg)
             
             # Calcula a expiração
@@ -95,12 +95,12 @@ class BasePaymentApi(models.Model):
                 'token_type': response_data.get('token_type', 'Bearer')
             }
             
-            self.write({
+            base_payment_api.write({
                 'itau_pix_current_token': token_data['access_token'],
                 'itau_pix_token_expires_at': token_data['expires_at'],
             })
 
-            self.create_token_log(
+            base_payment_api.create_token_log(
                 token_data,
                 'success',
                 request_data=payload,
@@ -108,27 +108,152 @@ class BasePaymentApi(models.Model):
                 duration_ms=duration_ms
             )
             
-            _logger.info(
-                f"Token Itau PIX renovado com sucesso."
-            )
-            
+            _logger.info(f"Token Itau PIX renovado com sucesso.")
             return token_data['access_token']
             
         except requests.exceptions.RequestException as e:
             error_msg = f'Erro na requisição: {str(e)}'
-            self.create_token_log({}, 'failed', error_msg, payload, str(e), duration_ms if 'duration_ms' in locals() else None)
+            base_payment_api.create_token_log({}, 'failed', error_msg, payload, str(e), duration_ms if 'duration_ms' in locals() else None)
             raise ValidationError(_('Erro ao gerar o token de autorização Itau PIX: %s') % str(e))
         except Exception as e:
             raise ValidationError(_('Erro ao gerar o token de autorização Itau PIX: %s') % str(e))
-    
-    
-    #TODO - Verificar depois como é a api para Produção
-    def get_api_url(self):
-        """Retorna a URL da API baseada na integração"""
-        self.ensure_one()
+  
+    def send_pix(self, payload, payment_id=None, move_line_id=None):
+        """Envia um PIX para o Itau"""
+        try:
+            base_payment_api = self.search([
+                ('integracao', '=', 'itau_pix'),
+                ('company_id', '=', self.env.company.id),
+                ('active', '=', True)
+            ], limit=1)
+            if not base_payment_api:
+                raise ValidationError(_('Não foi encontrada a API de integração do Itau PIX para a empresa %s') % self.env.company.name)
+            
+            token = self._get_itau_pix_token(base_payment_api)
+            headers = {
+                'Content-Type': 'application/json',
+                'X-API-Key': base_payment_api.client_id,
+                'Authorization': f'Bearer {token}',
+            }
+            
+            url = f'{base_payment_api.base_url}/itau-ep9-gtw-sispag-ext/v1/transferencias'
+            payload_json = json.dumps(payload, indent=2, ensure_ascii=False)
+            response = requests.post(
+                url=url,
+                json=payload,
+                headers=headers,
+                timeout=base_payment_api.timeout or 30
+            )
+            
+            try:
+                response.raise_for_status()
+                response_json = response.json()
+                response_str = json.dumps(response_json, indent=2, ensure_ascii=False)
+            except:
+                response_str = response.text
+            
+            # Verifica erro de idempotência
+            if response.status_code == 409:
+                error_msg = 'Pagamento duplicado (idempotência). Verifique se o PIX já foi enviado anteriormente.'
+                _logger.warning(f'HTTP 409 - {error_msg}')
+                
+                # Tenta buscar o pagamento PIX existente
+                existing_pix = self.env['payment.pix'].search([
+                ('txid', '=', payload.get('txid')),
+                ('correlation_id', '=', payload.get('correlation_id'))
+                ], limit=1)
+                
+                if existing_pix:
+                    _logger.info(f'Pagamento PIX existente encontrado: {existing_pix.id}')
+                    return existing_pix
+                else:
+                    raise ValidationError(_(error_msg))
+            
+            # Extrai dados do payload para o registro
+            txid = payload.get('txid', '')
+            correlation_id = payload.get('correlation_id', '')
+            
+            # Gera correlation_id se não foi fornecido
+            if not correlation_id:
+                import uuid
+                correlation_id = str(uuid.uuid4())
+            
+            # Cria registro do pagamento PIX
+            payment_pix_vals = {
+                'name': f"PAG_{payload.get('identificacao_comprovante', '')}",
+                'description': payload.get('informacoes_entre_usuarios', ''),
+                'amount': float(payload.get('valor_pagamento', 0).replace(',', '.')) if isinstance(payload.get('valor_pagamento'), str) else payload.get('valor_pagamento', 0),
+                'date': fields.Datetime.now(),
+                'status': response_json.get('status_pagamento', ''),
+                'type': response_json.get('tipo_pagamento', 'PIX'),
+                'pix_id': response_json.get('cod_pagamento', ''),
+                'txid': txid,
+                'correlation_id': correlation_id,
+                'payment_id': payment_id,
+                'move_line_id': move_line_id,
+                'json_send': payload_json,
+                'json_response': response_str,
+            }
+            
+            return self.env['payment.pix'].create(payment_pix_vals)
         
-        if self.integracao == 'itau_pix':
-            base_url = self.base_url.rstrip('/')
-            return base_url
-        else:
-            return self.base_url.rstrip('/') if self.base_url else ''
+        except requests.exceptions.HTTPError as e:
+            error_msg = f'Erro de comunicação HTTP ao enviar PIX: {e}'
+            if hasattr(e.response, 'text'):
+                error_msg += f'\nResposta: {e.response.text}'
+            _logger.error(error_msg)
+            if payment_id:
+                payment = self.env['account.payment'].browse(payment_id)
+                if payment.exists():
+                    payment.message_post(
+                        body=_('Erro ao enviar PIX: %s') % str(e),
+                        message_type='notification',
+                    )
+            raise ValidationError(_('Erro ao enviar o PIX: %s') % str(e))
+            
+        except Exception as e:
+            _logger.error(f'Erro inesperado ao enviar PIX: {e}', exc_info=True)
+            if payment_id:
+                payment = self.env['account.payment'].browse(payment_id)
+                if payment.exists():
+                    payment.message_post(
+                        body=_('Erro ao enviar PIX: %s') % str(e),
+                        message_type='notification',
+                    )
+            raise ValidationError(_('Erro ao enviar o PIX: %s') % str(e))
+  
+    def update_payment_pix_status(self, payment_pix_id):
+        """Atualiza o status de um pagamento PIX enviado para o Itaú"""
+        try:
+            base_payment_api = self.search([
+                ('integracao', '=', 'itau_pix'),
+                ('company_id', '=', self.env.company.id),
+                ('active', '=', True)
+            ], limit=1)
+            if not base_payment_api:
+                raise ValidationError(_('Não foi encontrada a API de integração do Itau PIX para a empresa %s') % self.env.company.name)
+            token = self._get_itau_pix_token(base_payment_api)
+            headers = {
+                'Content-Type': 'application/json',
+                'X-API-Key': base_payment_api.client_id,
+                'Authorization': f'Bearer {token}',
+            }
+            
+            url = f'{base_payment_api.base_url}/itau-ep9-gtw-sispag-ext/v1/pagamentos_sispag/{payment_pix_id}'
+            response = requests.get(
+                url=url,
+                headers=headers,
+                timeout=base_payment_api.timeout or 30
+            )
+            response.raise_for_status()
+            response_json = response.json()
+            return response_json
+        except requests.exceptions.HTTPError as e:
+            error_msg = f'Erro de comunicação HTTP ao atualizar status do pagamento PIX: {e}'
+            if hasattr(e.response, 'text'):
+                error_msg += f'\nResposta: {e.response.text}'
+            _logger.error(error_msg)
+            raise ValidationError(_('Erro ao atualizar status do pagamento PIX: %s') % str(e))
+        except Exception as e:
+            _logger.error(f'Erro inesperado ao atualizar status do pagamento PIX: {e}', exc_info=True)
+            raise ValidationError(_('Erro ao atualizar status do pagamento PIX: %s') % str(e))

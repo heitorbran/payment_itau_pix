@@ -6,5 +6,4 @@ from . import res_company
 from . import account_journal
 from . import account_payment
 from . import base_payment_api
-from . import itau_api_pix
 from . import payment_pix

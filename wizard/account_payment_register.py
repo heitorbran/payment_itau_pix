@@ -126,6 +126,7 @@ class AccountPaymentRegister(models.TransientModel):
                 )
                 if payment_lines and parcel_line:
                     (payment_lines | parcel_line).reconcile()
+                    payment.state = 'in_process'
                     
                     move = parcel_line.move_id
                     if move and payment not in move.matched_payment_ids:

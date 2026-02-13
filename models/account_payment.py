@@ -3,6 +3,7 @@
 import json
 import re
 import uuid
+from datetime import timedelta
 from odoo import models, fields, api, _
 from odoo.exceptions import UserError, ValidationError
 import logging
@@ -213,10 +214,9 @@ class AccountPayment(models.Model):
         move_line_id = move_line.id if move_line else None
 
         # Envia via API
-        itau_api_pix = self.env['itau.api.pix']
-        payment_pix = itau_api_pix.send_pix(
+        base_payment_api = self.env['base.payment.api']
+        payment_pix = base_payment_api.send_pix(
             payload,
-            company_id=self.company_id.id,
             payment_id=self.id,
             move_line_id=move_line_id
         )
@@ -259,16 +259,13 @@ class AccountPayment(models.Model):
             )
             self.state = 'in_process'
             return {
-                'type': 'ir.actions.client',
-                'tag': 'display_notification',
-                'params': {
-                    'title': _('PIX enviado com sucesso para o Itaú'),
-                    'message': _('Registro PIX: %s') % payment_pix.name,
-                    'type': 'success',
-                    'sticky': False,
-                    'target': 'current',
-                },
+                'type': 'ir.actions.act_window',
+                'res_model': 'account.payment',
+                'res_id': self.id,
+                'view_mode': 'form',
+                'target': 'current',
             }
+            
         except Exception as e:
             _logger.error(
                 f'Erro ao enviar PIX para o pagamento {self.id}: {e}',
@@ -290,3 +287,30 @@ class AccountPayment(models.Model):
                     'target': 'current',
                 },
             }
+            
+    def action_update_payment_pix_status(self):
+        """Atualiza o status de um pagamento PIX enviado para o Itaú"""
+        self.ensure_one()
+        api_return = self.env['base.payment.api'].update_payment_pix_status(self.payment_pix_id.id)
+        api_status = api_return.get('data', {}).get('dados_pagamento',{}).get('status')
+        if api_status:
+            if api_status.lower() == 'efetuado':
+                self.state = 'paid'
+                self.message_post(
+                    body=_('Pagamento PIX atualizado para status: pago'),
+                    message_type='notification',
+                )
+            elif api_status.lower() == 'não efetuado':
+                self.state = 'draft'
+                self.message_post(
+                    body=_('Pagamento PIX atualizado para status: não efetuado'),
+                    message_type='notification',
+                )
+        
+        return {
+            'type': 'ir.actions.act_window',
+            'res_model': 'account.payment',
+            'res_id': self.id,
+            'view_mode': 'form',
+            'target': 'current',
+        }
