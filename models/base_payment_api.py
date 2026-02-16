@@ -1,6 +1,6 @@
 # No arquivo base_payment_api.py
 from odoo import models, fields, api, _
-from odoo.exceptions import ValidationError
+from odoo.exceptions import ValidationError, UserError
 from datetime import datetime, timedelta
 import requests
 import logging
@@ -120,6 +120,10 @@ class BasePaymentApi(models.Model):
   
     def send_pix(self, payload, payment_id=None, move_line_id=None):
         """Envia um PIX para o Itau"""
+        # Validação: correlation_id deve sempre estar presente para idempotência
+        if not payload.get('correlation_id'):
+            raise ValidationError(_('correlation_id é obrigatório no payload para garantir idempotência.'))
+        
         try:
             base_payment_api = self.search([
                 ('integracao', '=', 'itau_pix'),
@@ -127,7 +131,7 @@ class BasePaymentApi(models.Model):
                 ('active', '=', True)
             ], limit=1)
             if not base_payment_api:
-                raise ValidationError(_('Não foi encontrada a API de integração do Itau PIX para a empresa %s') % self.env.company.name)
+                raise UserError(_('Não foi encontrada a API de integração do Itau PIX para a empresa %s') % self.env.company.name)
             
             token = self._get_itau_pix_token(base_payment_api)
             headers = {
@@ -157,26 +161,30 @@ class BasePaymentApi(models.Model):
                 error_msg = 'Pagamento duplicado (idempotência). Verifique se o PIX já foi enviado anteriormente.'
                 _logger.warning(f'HTTP 409 - {error_msg}')
                 
-                # Tenta buscar o pagamento PIX existente
-                existing_pix = self.env['payment.pix'].search([
-                ('txid', '=', payload.get('txid')),
-                ('correlation_id', '=', payload.get('correlation_id'))
-                ], limit=1)
+                # Busca usando payment_id (mais confiável) ou txid/correlation_id
+                search_domain = []
+                if payment_id:
+                    search_domain.append(('payment_id', '=', payment_id))
+                
+                txid = payload.get('txid')
+                if txid:
+                    search_domain.append(('txid', '=', txid))
+                
+                correlation_id = payload.get('correlation_id')
+                if correlation_id:
+                    search_domain.append(('correlation_id', '=', correlation_id))
+                
+                existing_pix = self.env['payment.pix'].search(search_domain, limit=1) if search_domain else self.env['payment.pix']
                 
                 if existing_pix:
                     _logger.info(f'Pagamento PIX existente encontrado: {existing_pix.id}')
                     return existing_pix
                 else:
-                    raise ValidationError(_(error_msg))
+                    raise UserError(_(error_msg))
             
             # Extrai dados do payload para o registro
             txid = payload.get('txid', '')
             correlation_id = payload.get('correlation_id', '')
-            
-            # Gera correlation_id se não foi fornecido
-            if not correlation_id:
-                import uuid
-                correlation_id = str(uuid.uuid4())
             
             # Cria registro do pagamento PIX
             payment_pix_vals = {
@@ -193,13 +201,14 @@ class BasePaymentApi(models.Model):
                 'move_line_id': move_line_id,
                 'json_send': payload_json,
                 'json_response': response_str,
+                'pix_state': 'sent',  # Estado inicial após envio
             }
             
             return self.env['payment.pix'].create(payment_pix_vals)
         
         except requests.exceptions.HTTPError as e:
             error_msg = f'Erro de comunicação HTTP ao enviar PIX: {e}'
-            if hasattr(e.response, 'text'):
+            if hasattr(e, 'response') and hasattr(e.response, 'text'):
                 error_msg += f'\nResposta: {e.response.text}'
             _logger.error(error_msg)
             if payment_id:
@@ -209,7 +218,7 @@ class BasePaymentApi(models.Model):
                         body=_('Erro ao enviar PIX: %s') % str(e),
                         message_type='notification',
                     )
-            raise ValidationError(_('Erro ao enviar o PIX: %s') % str(e))
+            raise UserError(_('Erro ao enviar o PIX: %s') % str(e))
             
         except Exception as e:
             _logger.error(f'Erro inesperado ao enviar PIX: {e}', exc_info=True)
@@ -220,7 +229,10 @@ class BasePaymentApi(models.Model):
                         body=_('Erro ao enviar PIX: %s') % str(e),
                         message_type='notification',
                     )
-            raise ValidationError(_('Erro ao enviar o PIX: %s') % str(e))
+            # Converte para UserError para erros de negócio
+            if isinstance(e, (UserError, ValidationError)):
+                raise
+            raise UserError(_('Erro ao enviar o PIX: %s') % str(e))
   
     def update_payment_pix_status(self, payment_pix_id):
         """Atualiza o status de um pagamento PIX enviado para o Itaú"""

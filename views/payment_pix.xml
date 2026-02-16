@@ -5,6 +5,9 @@
         <field name="model">payment.pix</field>
         <field name="arch" type="xml">
             <form string="PIX">
+                <header>
+                    <field name="pix_state" widget="statusbar" statusbar_visible="pending,sent,paid,failed"/>
+                </header>
                 <sheet>
                     <group>
                         <field name="name"/>

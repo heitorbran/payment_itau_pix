@@ -195,6 +195,14 @@ class AccountPayment(models.Model):
         else:
             raise UserError(_('Tipo de pagamento PIX não configurado na conta bancária do fornecedor.'))
 
+        # Garante que correlation_id sempre está presente
+        if 'correlation_id' not in payload:
+            payload['correlation_id'] = self.pix_correlation_id or self._generate_correlation_id()
+
+        # Para chave_pix, também pode ter txid se já foi gerado
+        if bank_account.pix_payment_type == 'chave_pix' and self.pix_txid:
+            payload['txid'] = self.pix_txid
+
         return payload
 
     def _send_pix_payment(self):
@@ -208,17 +216,19 @@ class AccountPayment(models.Model):
 
         # Constrói o payload
         payload = self._build_pix_payload_from_payment()
-
-        # Obtém a linha da fatura relacionada
-        move_line = self.env['account.move.line'].search([('move_id', '=', self.move_id.id)], limit=1)
-        move_line_id = move_line.id if move_line else None
+        
+        # Garante que correlation_id e txid sempre existam para idempotência
+        if not payload.get('correlation_id'):
+            payload['correlation_id'] = self.pix_correlation_id or self._generate_correlation_id()
+        if not payload.get('txid') and self.pix_txid:
+            payload['txid'] = self.pix_txid
 
         # Envia via API
         base_payment_api = self.env['base.payment.api']
         payment_pix = base_payment_api.send_pix(
             payload,
             payment_id=self.id,
-            move_line_id=move_line_id
+            move_line_id=None  # Não é necessário para a API
         )
 
         # Vincula o pagamento PIX ao account.payment
@@ -239,9 +249,18 @@ class AccountPayment(models.Model):
 
         if self.partner_type != 'supplier':
             raise UserError(_('Esta funcionalidade é apenas para pagamentos a fornecedores.'))
-
-        if self.state != 'in_process':
-            raise UserError(_('O pagamento deve estar em (Em processamento) para enviar o PIX.'))
+        
+        # Garantir que o pagamento está postado antes de enviar PIX
+        if self.state == 'draft':
+            self.action_post()
+        
+        # Validação crítica: move_id deve existir e estar postado
+        if not self.move_id or self.move_id.state != 'posted':
+            raise UserError(
+                _('O pagamento deve estar postado para enviar o PIX. '
+                  'Estado atual do pagamento: %s. Estado do lançamento: %s') 
+                % (self.state, self.move_id.state if self.move_id else 'N/A')
+            )
         
         if not self.partner_bank_id:
             raise UserError(_('É necessário configurar uma conta bancária do fornecedor no pagamento.'))
@@ -253,11 +272,18 @@ class AccountPayment(models.Model):
         
         try:
             payment_pix = self._send_pix_payment()
+            
+            # Atualiza estado PIX (não o estado contábil)
+            payment_pix.write({
+                'pix_state': 'sent',
+                'pix_state_message': 'PIX enviado com sucesso para o Itaú'
+            })
+            
             self.message_post(
                 body=_('PIX enviado com sucesso para o Itaú. Registro PIX: %s') % payment_pix.name,
                 message_type='notification',
             )
-            self.state = 'in_process'
+            
             return {
                 'type': 'ir.actions.act_window',
                 'res_model': 'account.payment',
@@ -271,41 +297,116 @@ class AccountPayment(models.Model):
                 f'Erro ao enviar PIX para o pagamento {self.id}: {e}',
                 exc_info=True
             )
-            self.state = 'draft'
+            
+            # Não altera o state do pagamento - mantém como está
+            # Apenas registra o erro no chatter
             self.message_post(
                 body=_('Erro ao enviar PIX: %s') % str(e),
                 message_type='notification',
             )
-            return {
-                'type': 'ir.actions.client',
-                'tag': 'display_notification',
-                'params': {
-                    'title': _('Erro ao enviar PIX'),
-                    'message': _('Erro ao enviar PIX: %s') % str(e),
-                    'type': 'danger',
-                    'sticky': True,
-                    'target': 'current',
-                },
-            }
+            
+            # Se payment_pix foi criado, marca como failed
+            if self.payment_pix_id:
+                self.payment_pix_id.write({
+                    'pix_state': 'failed',
+                    'pix_state_message': str(e)
+                })
+            
+            # Converte exceções para UserError
+            if isinstance(e, (UserError, ValidationError)):
+                raise
+            raise UserError(_('Erro ao enviar o PIX: %s') % str(e))
             
     def action_update_payment_pix_status(self):
         """Atualiza o status de um pagamento PIX enviado para o Itaú"""
         self.ensure_one()
+        
+        if not self.payment_pix_id:
+            raise UserError(_('Este pagamento não possui um registro PIX associado.'))
+
         api_return = self.env['base.payment.api'].update_payment_pix_status(self.payment_pix_id.id)
-        api_status = api_return.get('data', {}).get('dados_pagamento',{}).get('status')
-        if api_status:
-            if api_status.lower() == 'efetuado':
-                self.state = 'paid'
-                self.message_post(
-                    body=_('Pagamento PIX atualizado para status: pago'),
-                    message_type='notification',
+        api_status = api_return.get('data', {}).get('dados_pagamento', {}).get('status')
+        
+        if not api_status:
+            self.message_post(
+                body=_('Status do PIX não encontrado na resposta da API'),
+                message_type='notification',
+            )
+            return {
+                'type': 'ir.actions.act_window',
+                'res_model': 'account.payment',
+                'res_id': self.id,
+                'view_mode': 'form',
+                'target': 'current',
+            }
+        
+        status = api_status.lower()
+        
+        # Atualiza apenas o estado PIX, nunca o estado contábil
+        if status == 'efetuado':
+            # Atualiza estado PIX
+            self.payment_pix_id.write({
+                'pix_state': 'paid',
+                'pix_state_message': 'PIX confirmado como pago pela API'
+            })
+            
+            # Garante que o pagamento está postado para reconciliação
+            if self.state == 'draft':
+                self.action_post()
+            
+            if not self.move_id or self.move_id.state != 'posted':
+                raise UserError(_('O lançamento contábil do pagamento deve estar postado para reconciliar.'))
+            
+            # Reconciliação com faturas vinculadas
+            if self.partner_type == 'supplier':
+                invoices = self.reconciled_bill_ids or self.invoice_ids.filtered(
+                    lambda m: m.is_purchase_document(True)
                 )
-            elif api_status.lower() == 'não efetuado':
-                self.state = 'draft'
-                self.message_post(
-                    body=_('Pagamento PIX atualizado para status: não efetuado'),
-                    message_type='notification',
+            else:  # customer
+                invoices = self.reconciled_invoice_ids or self.invoice_ids.filtered(
+                    lambda m: m.is_sale_document(True)
                 )
+            
+            # Para cada fatura, fazer reconciliação
+            for invoice in invoices:
+                # Linha principal da fatura (payable/receivable)
+                invoice_line = invoice.line_ids.filtered(
+                    lambda l: l.account_id.reconcile
+                            and not l.reconciled
+                            and l.partner_id == self.partner_id
+                )[:1]
+
+                # Linha principal do pagamento
+                payment_line = self.move_id.line_ids.filtered(
+                    lambda l: l.account_id.reconcile
+                            and not l.reconciled
+                            and l.partner_id == self.partner_id
+                )[:1]
+
+                if invoice_line and payment_line:
+                    try:
+                        (invoice_line | payment_line).reconcile()
+
+                        self.message_post(
+                            body=_('Pagamento PIX confirmado e reconciliado com a fatura %s') % invoice.name
+                        )
+
+                    except Exception as e:
+                        raise UserError(
+                            _('Erro ao reconciliar pagamento PIX com %s: %s') %
+                            (invoice.name, str(e))
+                        )
+
+            
+            self.invalidate_recordset(['reconciled_bill_ids', 'reconciled_invoice_ids', 'is_reconciled'])
+            self.message_post(body=_('Pagamento PIX confirmado pela API'))
+            
+        elif status == 'não efetuado':
+            self.payment_pix_id.write({
+                'pix_state': 'failed',
+                'pix_state_message': 'PIX não efetuado conforme resposta da API'
+            })
+            self.message_post(body=_('Pagamento PIX não efetuado pela API'))
         
         return {
             'type': 'ir.actions.act_window',

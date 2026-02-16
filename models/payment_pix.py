@@ -23,3 +23,21 @@ class PaymentPix(models.Model):
   move_id = fields.Many2one(related='move_line_id.move_id', string='Fatura', store=True)
   partner_id = fields.Many2one(related='move_line_id.partner_id', string='Parceiro', store=True)
   company_id = fields.Many2one(related='move_id.company_id', string='Empresa', store=True)
+  
+  # Estado PIX (independente do estado contábil)
+  pix_state = fields.Selection(
+    [
+      ('pending', 'Pendente'),
+      ('sent', 'Enviado'),
+      ('paid', 'Pago'),
+      ('failed', 'Falhou'),
+    ],
+    string='Estado PIX',
+    default='pending',
+    tracking=True,
+    help='Estado do pagamento PIX (independente do estado contábil)'
+  )
+  pix_state_message = fields.Text(
+    string='Mensagem de Estado',
+    help='Mensagem de erro ou informação sobre o estado do PIX'
+  )
