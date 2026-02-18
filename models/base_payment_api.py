@@ -160,51 +160,21 @@ class BasePaymentApi(models.Model):
             if response.status_code == 409:
                 error_msg = 'Pagamento duplicado (idempotência). Verifique se o PIX já foi enviado anteriormente.'
                 _logger.warning(f'HTTP 409 - {error_msg}')
-                
-                # Busca usando payment_id (mais confiável) ou txid/correlation_id
-                search_domain = []
-                if payment_id:
-                    search_domain.append(('payment_id', '=', payment_id))
-                
-                txid = payload.get('txid')
-                if txid:
-                    search_domain.append(('txid', '=', txid))
-                
-                correlation_id = payload.get('correlation_id')
-                if correlation_id:
-                    search_domain.append(('correlation_id', '=', correlation_id))
-                
-                existing_pix = self.env['payment.pix'].search(search_domain, limit=1) if search_domain else self.env['payment.pix']
-                
-                if existing_pix:
-                    _logger.info(f'Pagamento PIX existente encontrado: {existing_pix.id}')
-                    return existing_pix
-                else:
-                    raise UserError(_(error_msg))
+                raise UserError(_(error_msg))
             
-            # Extrai dados do payload para o registro
+            # Extrai dados do payload e resposta
             txid = payload.get('txid', '')
             correlation_id = payload.get('correlation_id', '')
             
-            # Cria registro do pagamento PIX
-            payment_pix_vals = {
-                'name': f"PAG_{payload.get('identificacao_comprovante', '')}",
-                'description': payload.get('informacoes_entre_usuarios', ''),
-                'amount': float(payload.get('valor_pagamento', 0).replace(',', '.')) if isinstance(payload.get('valor_pagamento'), str) else payload.get('valor_pagamento', 0),
-                'date': fields.Datetime.now(),
-                'status': response_json.get('status_pagamento', ''),
-                'type': response_json.get('tipo_pagamento', 'PIX'),
-                'pix_id': response_json.get('cod_pagamento', ''),
+            # Retorna dict com dados do PIX
+            return {
                 'txid': txid,
                 'correlation_id': correlation_id,
-                'payment_id': payment_id,
-                'move_line_id': move_line_id,
-                'json_send': payload_json,
-                'json_response': response_str,
-                'pix_state': 'sent',  # Estado inicial após envio
+                'json_response': response_json,
+                'json_response_str': response_str,
+                'status': response_json.get('status_pagamento', ''),
+                'pix_id': response_json.get('cod_pagamento', ''),
             }
-            
-            return self.env['payment.pix'].create(payment_pix_vals)
         
         except requests.exceptions.HTTPError as e:
             error_msg = f'Erro de comunicação HTTP ao enviar PIX: {e}'
@@ -234,8 +204,8 @@ class BasePaymentApi(models.Model):
                 raise
             raise UserError(_('Erro ao enviar o PIX: %s') % str(e))
   
-    def update_payment_pix_status(self, payment_pix_id):
-        """Atualiza o status de um pagamento PIX enviado para o Itaú"""
+    def update_payment_pix_status(self, txid):
+        """Atualiza o status de um pagamento PIX enviado para o Itaú usando o TXID"""
         try:
             base_payment_api = self.search([
                 ('integracao', '=', 'itau_pix'),
@@ -251,7 +221,7 @@ class BasePaymentApi(models.Model):
                 'Authorization': f'Bearer {token}',
             }
             
-            url = f'{base_payment_api.base_url}/itau-ep9-gtw-sispag-ext/v1/pagamentos_sispag/{payment_pix_id}'
+            url = f'{base_payment_api.base_url}/itau-ep9-gtw-sispag-ext/v1/pagamentos_sispag/{txid}'
             response = requests.get(
                 url=url,
                 headers=headers,

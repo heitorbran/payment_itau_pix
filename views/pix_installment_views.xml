@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data>
+        <!-- list View para Parcelas PIX -->
+        <record id="view_pix_installment_list" model="ir.ui.view">
+            <field name="name">pix.installment.list</field>
+            <field name="model">pix.installment</field>
+            <field name="arch" type="xml">
+                <list string="Parcelas PIX" decoration-info="pix_status == 'pending'" decoration-success="pix_status == 'paid'" decoration-danger="pix_status == 'failed'">
+                    <field name="name"/>
+                    <field name="invoice_id"/>
+                    <field name="payment_id"/>
+                    <field name="currency_id" invisible="1"/>
+                    <field name="amount" sum="Total"/>
+                    <field name="due_date"/>
+                    <field name="pix_status" widget="badge" decoration-info="pix_status == 'pending'" decoration-success="pix_status == 'paid'" decoration-danger="pix_status == 'failed'"/>
+                    <field name="pix_txid"/>
+                    <field name="last_sync"/>
+                </list>
+            </field>
+        </record>
+
+        <!-- Form View para Parcelas PIX -->
+        <record id="view_pix_installment_form" model="ir.ui.view">
+            <field name="name">pix.installment.form</field>
+            <field name="model">pix.installment</field>
+            <field name="arch" type="xml">
+                <form string="Parcela PIX">
+                    <header>
+                        <field name="pix_status" widget="statusbar" statusbar_visible="draft,pending,paid"/>
+                    </header>
+                    <sheet>
+                        <group>
+                            <group>
+                                <field name="invoice_id" readonly="1"/>
+                                <field name="payment_id" readonly="1"/>
+                                <field name="partner_id" readonly="1"/>
+                                <field name="company_id" readonly="1"/>
+                            </group>
+                            <group>
+                                <field name="amount"/>
+                                <field name="currency_id" readonly="1"/>
+                                <field name="due_date"/>
+                                <field name="pix_paid_date" readonly="1"/>
+                                <field name="pix_txid"/>
+                                <field name="last_sync"/>
+                            </group>
+                        </group>
+                        <notebook>
+                            <page string="Detalhes PIX" name="pix_details">
+                                <group>
+                                    <field name="pix_payload" widget="text" readonly="1" nolabel="1" placeholder="Payload PIX será exibido aqui após o envio"/>
+                                </group>
+                            </page>
+                            <page string="Resposta da API" name="pix_response">
+                                <group>
+                                    <field name="pix_response" widget="text" readonly="1" nolabel="1" placeholder="Resposta da API será exibida aqui após o envio"/>
+                                </group>
+                            </page>
+                        </notebook>
+                    </sheet>
+                    <chatter/>
+                </form>
+            </field>
+        </record>
+
+        <!-- Action para Parcelas PIX -->
+        <record id="action_pix_installment" model="ir.actions.act_window">
+            <field name="name">Parcelas PIX</field>
+            <field name="res_model">pix.installment</field>
+            <field name="view_mode">list,form</field>
+            <field name="help" type="html">
+                <p class="o_view_nocontent_smiling_face">
+                    Crie parcelas PIX
+                </p>
+                <p>
+                    As parcelas PIX são criadas automaticamente ao gerar parcelas para uma fatura.
+                </p>
+            </field>
+        </record>
+
+
+        <menuitem id="menu_payment_pix_root"
+              name="Pagamentos PIX"
+              sequence="10"
+              parent="account.menu_finance_configuration"
+              groups="account.group_account_manager"/>
+
+        <menuitem id="menu_payment_pix"
+                name="Parcelas PIX"
+                parent="menu_payment_pix_root"
+                action="action_pix_installment"
+                sequence="10"
+                groups="account.group_account_manager"/>
+    </data>
+</odoo>
+

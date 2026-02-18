@@ -13,6 +13,22 @@ class ResCompany(models.Model):
         domain=[('integracao', '=', 'itau_pix'), ('active', '=', True)],
         help='Configuração da API de integração Itaú PIX para esta empresa'
     )
+    pix_transit_account_id = fields.Many2one(
+        'account.account',
+        string='Conta Transitória PIX',
+        domain=[('deprecated', '=', False)],
+        check_company=True,
+        help='Conta transitória utilizada para pagamentos PIX. '
+             'Esta conta recebe o crédito quando o pagamento é gerado e '
+             'é debitada quando o PIX é confirmado como pago.'
+    )
+    pix_journal_id = fields.Many2one(
+        'account.journal',
+        string='Diário PIX',
+        domain=[('type', '=', 'bank')],
+        check_company=True,
+        help='Diário utilizado para lançamentos contábeis relacionados a PIX'
+    )
 
     @api.constrains('itau_pix_api_id')
     def _check_itau_pix_api(self):

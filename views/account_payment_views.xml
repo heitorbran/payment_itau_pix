@@ -9,31 +9,35 @@
                 <xpath expr="//field[@name='payment_method_line_id']" position="after">
                     <field name="pix_txid" invisible="1"/>
                     <field name="pix_correlation_id" invisible="1"/>
-                    <field name="payment_pix_id" invisible="1"/>
+                    <field name="is_pix" invisible="1"/>
+                    <field name="pix_installment_id" invisible="1"/>
+                    <field name="pix_status" invisible="1"/>
+                    <field name="pix_last_sync" invisible="1"/>
+                    <field name="pix_raw_response" invisible="1"/>
                 </xpath>
                 <xpath expr="//header" position="inside">
                     <button name="action_send_pix_itau"
                             string="Enviar PIX Itaú"
                             type="object"
                             class="btn-primary"
-                            readonly="payment_pix_id != False"
                             help="Envia o pagamento via PIX Itaú"
-                            invisible="state != 'in_process' or payment_pix_id != False"/>
+                            invisible="not is_pix or state not in ('posted', 'in_process', 'paid') or pix_txid"/>
                     <button name="action_update_payment_pix_status"
-                            string="Atualizar status PIX Itaú"
+                            string="Atualizar status"
                             type="object"
                             class="btn-secondary"
-                            readonly="payment_pix_id != False"
                             help="Atualiza o status do pagamento PIX Itaú"
-                            invisible="state != 'in_process'"/>
+                            invisible="not is_pix or not pix_txid"/>
                 </xpath>
                 <xpath expr="//notebook" position="inside">
-                    <page string="PIX Itaú" invisible="not payment_pix_id">
+                    <page string="PIX Itaú" invisible="not pix_txid">
                         <group>
                             <group>
-                                <field name="payment_pix_id" readonly="1"/>
+                                <field name="pix_installment_id" readonly="1"/>
                                 <field name="pix_txid" readonly="1"/>
                                 <field name="pix_correlation_id" readonly="1"/>
+                                <field name="pix_status" readonly="1"/>
+                                <field name="pix_last_sync" readonly="1"/>
                             </group>
                         </group>
                     </page>

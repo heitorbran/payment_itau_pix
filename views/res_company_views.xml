@@ -14,6 +14,14 @@
                                        options="{'no_create': True, 'no_create_edit': True}"
                                        help="Selecione a configuração da API para esta empresa."/>
                             </group>
+                            <group string="Configuração Contábil PIX">
+                                <field name="pix_transit_account_id"
+                                       domain="[('deprecated', '=', False)]"
+                                       help="Conta transitória utilizada para pagamentos PIX. Esta conta recebe o crédito quando o pagamento é gerado e é debitada quando o PIX é confirmado como pago."/>
+                                <field name="pix_journal_id"
+                                       domain="[('type', '=', 'bank')]"
+                                       help="Diário utilizado para lançamentos contábeis relacionados a PIX"/>
+                            </group>
                         </group>
                     </page>
                 </xpath>

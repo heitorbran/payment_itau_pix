@@ -23,13 +23,75 @@ class AccountPayment(models.Model):
         copy=False,
         help='ID de correlação para rastreabilidade'
     )
-    payment_pix_id = fields.Many2one(
-        'payment.pix',
-        string='Pagamento PIX',
+    is_pix = fields.Boolean(
+        string='É PIX',
+        default=False,
+        copy=False,
+        help='Indica se este pagamento é um pagamento PIX'
+    )
+    pix_installment_id = fields.Many2one(
+        'pix.installment',
+        string='Parcela PIX',
         readonly=True,
         copy=False,
-        help='Registro do pagamento PIX gerado'
+        ondelete='set null',
+        help='Parcela PIX relacionada a este pagamento'
     )
+    pix_status = fields.Selection(
+        [
+            ('draft', 'Rascunho'),
+            ('pending', 'Pendente'),
+            ('paid', 'Pago'),
+            ('failed', 'Falhou'),
+        ],
+        string='Status PIX',
+        copy=False,
+        help='Status do pagamento PIX'
+    )
+    pix_last_sync = fields.Datetime(
+        string='Última Sincronização PIX',
+        copy=False,
+        help='Data e hora da última sincronização do status PIX'
+    )
+    pix_raw_response = fields.Text(
+        string='Resposta Bruta PIX',
+        copy=False,
+        help='Resposta completa da API PIX em formato JSON'
+    )
+
+    @api.depends('is_pix', 'company_id', 'company_id.pix_transit_account_id')
+    def _compute_outstanding_account_id(self):
+        """Override para usar conta transitória PIX quando is_pix=True"""
+        pix_payments = self.filtered(lambda p: p.is_pix and p.company_id.pix_transit_account_id)
+        super(AccountPayment, self - pix_payments)._compute_outstanding_account_id()
+        for payment in pix_payments:
+            payment.outstanding_account_id = payment.company_id.pix_transit_account_id
+
+    @api.depends('invoice_ids.payment_state', 'move_id.line_ids.amount_residual')
+    def _compute_state(self):
+        """Override para impedir mudança automática para 'paid' em pagamentos PIX
+        
+        Para pagamentos PIX, o payment deve permanecer em 'in_process' até que
+        o PIX seja confirmado como pago. Isso evita que o payment mude para 'paid'
+        automaticamente após a reconciliação, já que o PIX ainda não foi enviado/confirmado.
+        """
+        # Chama o método original do Odoo
+        super()._compute_state()
+        
+        # Para pagamentos PIX, não permite mudança automática para 'paid'
+        # O payment deve ficar em 'in_process' até que o PIX seja confirmado
+        for payment in self.filtered(lambda p: p.is_pix):
+            # Se o PIX ainda não foi confirmado como pago, mantém em 'in_process'
+            if payment.state == 'paid' and payment.pix_status not in ('paid',):
+                # Se o payment foi marcado como 'paid' automaticamente mas o PIX não foi confirmado,
+                # mantém em 'in_process'
+                if payment.pix_status in ('draft', 'pending', 'failed') or not payment.pix_status:
+                    payment.state = 'in_process'
+            # Se o PIX foi confirmado como pago, permite que o payment fique como 'paid'
+            elif payment.pix_status == 'paid' and payment.state == 'in_process':
+                # Se o PIX foi confirmado, pode mudar para 'paid' se todas as condições forem atendidas
+                # Deixa o método original decidir se deve ser 'paid' ou 'in_process'
+                pass
 
     def _generate_pix_txid(self):
         """Gera um TXID único para o pagamento PIX"""
@@ -225,20 +287,22 @@ class AccountPayment(models.Model):
 
         # Envia via API
         base_payment_api = self.env['base.payment.api']
-        payment_pix = base_payment_api.send_pix(
+        pix_data = base_payment_api.send_pix(
             payload,
             payment_id=self.id,
             move_line_id=None  # Não é necessário para a API
         )
 
-        # Vincula o pagamento PIX ao account.payment
+        # Atualiza campos do payment com dados retornados
         self.write({
-            'pix_txid': payment_pix.txid or self.pix_txid,
-            'pix_correlation_id': payment_pix.correlation_id or self.pix_correlation_id,
-            'payment_pix_id': payment_pix.id,
+            'pix_txid': pix_data.get('txid') or self.pix_txid,
+            'pix_correlation_id': pix_data.get('correlation_id') or self.pix_correlation_id,
+            'pix_raw_response': json.dumps(pix_data.get('json_response', {}), indent=2, ensure_ascii=False) if pix_data.get('json_response') else '',
+            'pix_status': 'pending',
+            'pix_last_sync': fields.Datetime.now(),
         })
 
-        return payment_pix
+        return pix_data
 
     def action_send_pix_itau(self):
         """Ação do botão para enviar PIX Itaú"""
@@ -265,22 +329,34 @@ class AccountPayment(models.Model):
         if not self.partner_bank_id:
             raise UserError(_('É necessário configurar uma conta bancária do fornecedor no pagamento.'))
 
-        if self.payment_pix_id:
+        if self.pix_txid:
             raise UserError(
-                _('Este pagamento já possui um PIX enviado. Verifique o registro de pagamento PIX relacionado.')
+                _('Este pagamento já possui um PIX enviado. TXID: %s') % self.pix_txid
             )
         
         try:
-            payment_pix = self._send_pix_payment()
+            pix_data = self._send_pix_payment()
+            
+            # Constrói o payload para salvar no installment
+            payload = self._build_pix_payload_from_payment()
             
             # Atualiza estado PIX (não o estado contábil)
-            payment_pix.write({
-                'pix_state': 'sent',
-                'pix_state_message': 'PIX enviado com sucesso para o Itaú'
+            self.write({
+                'pix_status': 'pending',
             })
             
+            # Se tiver installment relacionado, atualiza o pix_payload lá
+            if self.pix_installment_id:
+                self.pix_installment_id.write({
+                    'pix_payload': json.dumps(payload, indent=2, ensure_ascii=False),
+                    'pix_response': json.dumps(pix_data.get('json_response', {}), indent=2, ensure_ascii=False) if pix_data.get('json_response') else '',
+                    'pix_txid': pix_data.get('txid', ''),
+                    'pix_status': 'pending',
+                    'last_sync': fields.Datetime.now(),
+                })
+            
             self.message_post(
-                body=_('PIX enviado com sucesso para o Itaú. Registro PIX: %s') % payment_pix.name,
+                body=_('PIX enviado com sucesso para o Itaú. TXID: %s') % (self.pix_txid or 'N/A'),
                 message_type='notification',
             )
             
@@ -305,12 +381,10 @@ class AccountPayment(models.Model):
                 message_type='notification',
             )
             
-            # Se payment_pix foi criado, marca como failed
-            if self.payment_pix_id:
-                self.payment_pix_id.write({
-                    'pix_state': 'failed',
-                    'pix_state_message': str(e)
-                })
+            # Marca como failed
+            self.write({
+                'pix_status': 'failed',
+            })
             
             # Converte exceções para UserError
             if isinstance(e, (UserError, ValidationError)):
@@ -321,10 +395,10 @@ class AccountPayment(models.Model):
         """Atualiza o status de um pagamento PIX enviado para o Itaú"""
         self.ensure_one()
         
-        if not self.payment_pix_id:
-            raise UserError(_('Este pagamento não possui um registro PIX associado.'))
+        if not self.pix_txid:
+            raise UserError(_('Este pagamento não possui um TXID PIX associado.'))
 
-        api_return = self.env['base.payment.api'].update_payment_pix_status(self.payment_pix_id.id)
+        api_return = self.env['base.payment.api'].update_payment_pix_status(self.pix_txid)
         api_status = api_return.get('data', {}).get('dados_pagamento', {}).get('status')
         
         if not api_status:
@@ -341,71 +415,39 @@ class AccountPayment(models.Model):
             }
         
         status = api_status.lower()
+        self.pix_last_sync = fields.Datetime.now()
+        self.pix_raw_response = json.dumps(api_return, indent=2, ensure_ascii=False)
         
         # Atualiza apenas o estado PIX, nunca o estado contábil
+        # A reconciliação já foi feita na criação do payment via engine padrão do Odoo
         if status == 'efetuado':
             # Atualiza estado PIX
-            self.payment_pix_id.write({
-                'pix_state': 'paid',
-                'pix_state_message': 'PIX confirmado como pago pela API'
+            self.write({
+                'pix_status': 'paid',
             })
             
-            # Garante que o pagamento está postado para reconciliação
-            if self.state == 'draft':
-                self.action_post()
+            # Atualiza status PIX no payment se tiver installment
+            paid_datetime = fields.Datetime.now()
+            if self.pix_installment_id:
+                self.pix_installment_id.write({
+                    'pix_status': 'paid',
+                    'pix_paid_date': paid_datetime,
+                    'last_sync': paid_datetime,
+                    'pix_response': json.dumps(api_return, indent=2, ensure_ascii=False),
+                })
             
-            if not self.move_id or self.move_id.state != 'posted':
-                raise UserError(_('O lançamento contábil do pagamento deve estar postado para reconciliar.'))
-            
-            # Reconciliação com faturas vinculadas
-            if self.partner_type == 'supplier':
-                invoices = self.reconciled_bill_ids or self.invoice_ids.filtered(
-                    lambda m: m.is_purchase_document(True)
-                )
-            else:  # customer
-                invoices = self.reconciled_invoice_ids or self.invoice_ids.filtered(
-                    lambda m: m.is_sale_document(True)
-                )
-            
-            # Para cada fatura, fazer reconciliação
-            for invoice in invoices:
-                # Linha principal da fatura (payable/receivable)
-                invoice_line = invoice.line_ids.filtered(
-                    lambda l: l.account_id.reconcile
-                            and not l.reconciled
-                            and l.partner_id == self.partner_id
-                )[:1]
-
-                # Linha principal do pagamento
-                payment_line = self.move_id.line_ids.filtered(
-                    lambda l: l.account_id.reconcile
-                            and not l.reconciled
-                            and l.partner_id == self.partner_id
-                )[:1]
-
-                if invoice_line and payment_line:
-                    try:
-                        (invoice_line | payment_line).reconcile()
-
-                        self.message_post(
-                            body=_('Pagamento PIX confirmado e reconciliado com a fatura %s') % invoice.name
-                        )
-
-                    except Exception as e:
-                        raise UserError(
-                            _('Erro ao reconciliar pagamento PIX com %s: %s') %
-                            (invoice.name, str(e))
-                        )
-
-            
-            self.invalidate_recordset(['reconciled_bill_ids', 'reconciled_invoice_ids', 'is_reconciled'])
             self.message_post(body=_('Pagamento PIX confirmado pela API'))
             
         elif status == 'não efetuado':
-            self.payment_pix_id.write({
-                'pix_state': 'failed',
-                'pix_state_message': 'PIX não efetuado conforme resposta da API'
+            self.write({
+                'pix_status': 'failed',
             })
+            if self.pix_installment_id:
+                self.pix_installment_id.write({
+                    'pix_status': 'failed',
+                    'last_sync': fields.Datetime.now(),
+                    'pix_response': json.dumps(api_return, indent=2, ensure_ascii=False),
+                })
             self.message_post(body=_('Pagamento PIX não efetuado pela API'))
         
         return {
